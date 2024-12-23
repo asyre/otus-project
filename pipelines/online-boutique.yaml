@@ -1,0 +1,44 @@
+stages:
+  - clone-repo
+  - build-push-image
+  - helm-install-release
+
+workflow:
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+clone-repo-job:
+  stage: clone-repo
+  script:
+    - env
+    - cd ~
+    - rm -rf online-boutique
+    - git clone http://172.16.252.87/apps/online-boutique.git
+    - echo "Finish cloning online-boutique"
+
+build-push-image-job:
+  stage: build-push-image
+  script:
+    - cd ~/online-boutique/src
+    - tag="latest"
+    - registry="172.16.252.87:8443/library"
+    - |+
+      for d in */; do
+          image_name=${d::-1}
+          cd $d
+          docker build -f Dockerfile -t $image_name:$tag . > /dev/null
+          docker tag $image_name:$tag $registry/$image_name:$tag
+          docker push $registry/$image_name:$tag
+          cd ..
+      done
+
+helm-install-release-job:
+  stage: helm-install-release
+  script:
+    - cd ~/online-boutique
+    - helm upgrade --install minio-operator operator --repo https://operator.min.io --version 6.0.3 --set tenants=null --create-namespace -n minio-operator
+    - helm repo add prometheus https://prometheus-community.github.io/helm-charts
+    - helm repo update
+    - helm upgrade --install  prometheus prometheus/kube-prometheus-stack --version 67.4.0  -f helm-chart-values.yaml --create-namespace -n monitoring
+    - helm upgrade --install online-boutique oci://172.16.252.87:8443/charts/onlineboutique -f helm-chart-values.yaml --create-namespace -n online-boutique
+    - echo "Installed new helm release!"

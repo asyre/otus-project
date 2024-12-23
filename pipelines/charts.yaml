@@ -1,0 +1,32 @@
+stages:
+  - clone-repo
+  - helm-package-push
+
+workflow:
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+clone-repo-job:
+  stage: clone-repo
+  script:
+    - echo "staring cloning repo!"
+    - cd ~
+    - rm -rf charts
+    - git clone http://172.16.252.87/devops/charts.git
+    - echo "Finish cloning charts repo!"
+
+helm-package-job:
+  stage: helm-package-push
+  script:
+    - cd ~/charts/charts
+    - registry="oci://172.16.252.87:8443/charts"
+    - |+
+      for d in */; do
+        cd $d
+        echo "Dir name: $d"
+        helm dependency update
+        helm package .
+        package_name=$(ls | grep ".tgz")
+        helm push $package_name $registry --insecure-skip-tls-verify
+        cd ..
+      done

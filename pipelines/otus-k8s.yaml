@@ -1,0 +1,61 @@
+stages:
+  - clone-repo
+  - run-kuberspray
+  - copy-kubeconfig
+  - change-kubeconfig
+  - add-node-labels
+  - update-certs
+  - set-vip
+
+workflow:
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+clone-repo-job:
+  stage: clone-repo
+  script:
+    - echo "staring cloning repo!"
+    - cd ~
+    - rm -rf otus-k8s
+    - git clone http://172.16.252.87/devops/otus-k8s.git
+    - echo "Finish cloning otus-k8s repo!"
+
+run-kuberspray-job:
+ stage: run-kuberspray
+ script:
+   - cd ~/otus-k8s
+   - ansible-playbook -i inventory/otus/inventory.ini --become --become-user=root cluster.yml
+   - echo "Finish k8s setup!"
+
+copy-kubeconfig-job:
+  stage: copy-kubeconfig
+  script:
+    - scp root@172.16.252.86:/tmp/config /tmp/config
+    - echo "Finish copying kubeconf!"
+
+change-kubeconfig-job:
+  stage: change-kubeconfig
+  script:
+    - sed -i 's/127.0.0.1/172.16.252.86/' /tmp/config
+    - echo "Finish fixing kubecong!"
+
+label-nodes-job:
+  stage: add-node-labels
+  script:
+    - ssh root@172.16.252.86 'kubectl label no crp-infra-1 crp-infra-2 role=infra; kubectl label no crp-monitoring-1 role=monitoring; kubectl label no crp-node-1 crp-node-2 crp-node-3 role=service'
+    - echo "Finish labeling nodes!"
+
+update-certs-job:
+  stage: update-certs
+  script:
+    - cd ~/otus-k8s
+    - ansible-playbook -i inventory/otus/inventory.ini --become --become-user=root update_certs.yml
+    - echo "Finish k8s cert set up!"
+
+
+set-vip-job:
+  stage: set-vip
+  script:
+    - cd ~/otus-k8s
+    - ansible-playbook -i inventory/otus/inventory.ini --become --become-user=root set_vip.yml
+    - echo "Finish k8s vip set up!"
