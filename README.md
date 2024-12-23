@@ -94,12 +94,155 @@ Helm устанавливала в соответсвии с инструкци�
 # Online boutique
 После рефактора оригинальной версии бутика, в репе находится только код сервисов, докерфайлы для них и в корне проекта лежит values.yaml под изменненую версию значения чарта. Алгоритм работы чарта такой, собираются образы сервисов, после чего они пушаться в Харбор. Затем в кубере разворачивается новый релиз чарта, с обновленными образами. 
 
+```
+stages:
+  - clone-repo
+  - build-push-image
+  - helm-install-release
+
+workflow:
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+clone-repo-job:
+  stage: clone-repo
+  script:
+    - env
+    - cd ~
+    - rm -rf online-boutique
+    - git clone http://172.16.252.87/apps/online-boutique.git
+    - echo "Finish cloning online-boutique"
+
+build-push-image-job:
+  stage: build-push-image
+  script:
+    - cd ~/online-boutique/src
+    - tag="latest"
+    - registry="172.16.252.87:8443/library"
+    - |+
+      for d in */; do
+          image_name=${d::-1}
+          cd $d
+          docker build -f Dockerfile -t $image_name:$tag . > /dev/null
+          docker tag $image_name:$tag $registry/$image_name:$tag
+          docker push $registry/$image_name:$tag
+          cd ..
+      done
+
+helm-install-release-job:
+  stage: helm-install-release
+  script:
+    - cd ~/online-boutique
+    - helm upgrade --install minio-operator operator --repo https://operator.min.io --version 6.0.3 --set tenants=null --create-namespace -n minio-operator
+    - helm repo add prometheus https://prometheus-community.github.io/helm-charts
+    - helm repo update
+    - helm upgrade --install  prometheus prometheus/kube-prometheus-stack --version 67.4.0  -f helm-chart-values.yaml --create-namespace -n monitoring
+    - helm upgrade --install online-boutique oci://172.16.252.87:8443/charts/onlineboutique -f helm-chart-values.yaml --create-namespace -n online-boutique
+    - echo "Installed new helm release!"
+```
+
 # Charts
 Пайплайн проходит по репозиторию, собирает чарты и пушит в харбор.
+```
+stages:
+  - clone-repo
+  - helm-package-push
+
+workflow:
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+clone-repo-job:
+  stage: clone-repo
+  script:
+    - echo "staring cloning repo!"
+    - cd ~
+    - rm -rf charts
+    - git clone http://172.16.252.87/devops/charts.git
+    - echo "Finish cloning charts repo!"
+
+helm-package-job:
+  stage: helm-package-push
+  script:
+    - cd ~/charts/charts
+    - registry="oci://172.16.252.87:8443/charts"
+    - |+
+      for d in */; do
+        cd $d
+        echo "Dir name: $d"
+        helm dependency update
+        helm package .
+        package_name=$(ls | grep ".tgz")
+        helm push $package_name $registry --insecure-skip-tls-verify
+        cd ..
+      done
+```
 
 # K8s otus
 Данный пайплайн просто выкачивает репу и запускает несколько плейбуков для развертывания кластера.
+```
+stages:
+  - clone-repo
+  - run-kuberspray
+  - copy-kubeconfig
+  - change-kubeconfig
+  - add-node-labels
+  - update-certs
+  - set-vip
 
+workflow:
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+clone-repo-job:
+  stage: clone-repo
+  script:
+    - echo "staring cloning repo!"
+    - cd ~
+    - rm -rf otus-k8s
+    - git clone http://172.16.252.87/devops/otus-k8s.git
+    - echo "Finish cloning otus-k8s repo!"
+
+run-kuberspray-job:
+ stage: run-kuberspray
+ script:
+   - cd ~/otus-k8s
+   - ansible-playbook -i inventory/otus/inventory.ini --become --become-user=root cluster.yml
+   - echo "Finish k8s setup!"
+
+copy-kubeconfig-job:
+  stage: copy-kubeconfig
+  script:
+    - scp root@172.16.252.86:/tmp/config /tmp/config
+    - echo "Finish copying kubeconf!"
+
+change-kubeconfig-job:
+  stage: change-kubeconfig
+  script:
+    - sed -i 's/127.0.0.1/172.16.252.86/' /tmp/config
+    - echo "Finish fixing kubecong!"
+
+label-nodes-job:
+  stage: add-node-labels
+  script:
+    - ssh root@172.16.252.86 'kubectl label no crp-infra-1 crp-infra-2 role=infra; kubectl label no crp-monitoring-1 role=monitoring; kubectl label no crp-node-1 crp-node-2 crp-node-3 role=service'
+    - echo "Finish labeling nodes!"
+
+update-certs-job:
+  stage: update-certs
+  script:
+    - cd ~/otus-k8s
+    - ansible-playbook -i inventory/otus/inventory.ini --become --become-user=root update_certs.yml
+    - echo "Finish k8s cert set up!"
+
+
+set-vip-job:
+  stage: set-vip
+  script:
+    - cd ~/otus-k8s
+    - ansible-playbook -i inventory/otus/inventory.ini --become --become-user=root set_vip.yml
+    - echo "Finish k8s vip set up!"
+```
 
 ## Online boutique репозиторий
 В данный момент поместила чарты бутика и минио. Минио выбрала для того, чтобы показать, что я умею пользоваться функционалом helm, ну и чтобы бутику не было одиноко в харборе. Немного поправила чарт бутика, добавила ингрес контроллер, а так же было интересно воспользоваться функционалом зависимостей в чарте. Добавила в качестве зависимостей минио и локи.
@@ -114,6 +257,172 @@ Helm устанавливала в соответсвии с инструкци�
 
 Пайплайн репозитория бутика содержит в себе установку операторов minio и kube-prometheus-stack, через зависимости чарта бутика ставится минио, локи и промтейл. Что очень удобно и позволяет посредством названий чартов использовать один файл в репозитрии бутика для их управления.
 
+Конфигурация графаны
+```
+grafana:
+  enabled: true
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+          - matchExpressions:
+              - key: role
+                operator: In
+                values:
+                  - monitoring
+  adminPassword: prom-operator
+  ingress:
+    enabled: true
+    hosts:
+      - *default-crp-otus-project-host
+    path: /grafana
+  additionalDataSources:
+    - name: Loki
+      editable: true
+      type: loki
+      url: http://online-boutique-loki-gateway.online-boutique.svc.cluster.local:80
+  grafana.ini:
+    server:
+      domain: *default-crp-otus-project-host
+      root_url: "https://%(domain)s/grafana"
+      serve_from_sub_path: "true"
+```
+Конфигурация локи
+```
+loki:
+  create: true
+  global:
+    dnsService: "coredns"
+  loki:
+    server:
+      grpc_server_max_recv_msg_size: 20971520
+      grpc_server_max_send_msg_size: 20971520
+    auth_enabled: false
+    structuredConfig:
+      memberlist:
+        cluster_label: "loki"
+      schema_config:
+        configs:
+          - from: "2020-09-07"
+            store: tsdb
+            object_store: "s3"
+            schema: "v13"
+            index:
+              period: "24h"
+              prefix: "loki_index_"
+    compactor:
+      compaction_interval: 10m
+      retention_enabled: true
+      retention_delete_delay: 2h
+      retention_delete_worker_count: 150
+      delete_request_store: s3
+    limits_config:
+      retention_period: 24h
+      ingestion_rate_mb: 4
+      ingestion_burst_size_mb: 6
+    storage:
+      bucketNames:
+        chunks: loki
+        ruler: loki
+        admin: loki
+      s3:
+        s3: "http://minio:minio_secret_pass@minio.online-boutique.svc.cluster.local:9000"
+        endpoint: http://minio-hl.online-boutique.svc.cluster.local:9000
+        s3ForcePathStyle: true
+        access_key_id: "minio"
+        secret_access_key: "minio_secret_pass"
+        insecure: true
+        region: null
+        sse_encryption: false
+        http_config:
+          idle_conn_timeout: 90s
+          response_header_timeout: 0s
+          insecure_skip_verify: true
+    ingester:
+      autoforget_unhealthy: true
+    storage_config:
+    memcached:
+      chunk_cache:
+        enabled: false
+      results_cache:
+        enabled: false
+    commonConfig:
+      replication_factor: 1
+
+  resultsCache:
+    enabled: false
+  chunksCache:
+    enabled: false
+
+  write:
+    replicas: 1
+    autoscaling:
+      enabled: false
+    extraArgs:
+      - "-log.level=info"
+    maxUnavailable: 0
+    persistence:
+      volumeClaimsEnabled: false
+      dataVolumeParameters:
+        emptyDir: {}
+
+  read:
+    replicas: 1
+    autoscaling:
+      enabled: false
+    extraArgs:
+      - "-log.level=info"
+    maxUnavailable: 0
+    persistence:
+      volumeClaimsEnabled: false
+      dataVolumeParameters:
+        emptyDir: {}
+
+  backend:
+    replicas: 1
+    autoscaling:
+      enabled: false
+    extraArgs:
+      - "-log.level=info"
+    maxUnavailable: 0
+    persistence:
+      volumeClaimsEnabled: false
+      dataVolumeParameters:
+        emptyDir: {}
+
+  lokiCanary:
+    enabled: false
+
+  sidecar:
+    rules:
+      enabled: false
+
+  serviceMonitor:
+    enabled: false
+
+  monitoring:
+    selfMonitoring:
+      enabled: false
+
+  test:
+    enabled: false
+
+  enterprise:
+    enabled: false
+
+  gateway:
+    enabled: true
+```
+Конфигурация промтейл
+```
+promtail:
+  create: true
+  config:
+    clients:
+      - url: http://online-boutique-loki-gateway.online-boutique.svc.cluster.local/loki/api/v1/push
+```
+
+
 Для просмотра графы можно перейти по следующему адресу crp-k8s.digdes.com/grafana
 
 Для просмотра минио - по адресу crp-k8s-minio.digdes.com
@@ -123,7 +432,6 @@ Helm устанавливала в соответсвии с инструкци�
 ![img_9.png](img_9.png)
 
 Примеры мониторинга 
-
 
 
 ![img_10.png](img_10.png)
