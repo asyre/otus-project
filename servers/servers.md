@@ -41,8 +41,7 @@ crp-monitoring-1    172.16.252.93  root  1w2kaqzE    port 2293
 
 
 Пароль гитлаб
-root qiRrAnYGXLouwNQnRh8Z0QVbNA6gyq/lQvV40aDR+wA=
-
+root Emperium11
 Пароль Харбор
 admin Harbor12345
 
